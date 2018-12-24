@@ -17,7 +17,7 @@
 5. Beneficiary：块打包手续费的受益人，也称矿工（接收挖此区块费用的账户地址 ）
 6. Logsbloom：由日志信息组成的一个Bloom过滤器 （1.1.1节具体解释） 
 7. Difficulty:POW的难度值
-8. extra[Data](https://m.7234.cn/mip/z/Streamr/)：与此区块相关的附加数据
+8. extraData：与此区块相关的附加数据
 9. Number: 当前区块的计数（创世纪块的区块序号为0，对于每个后续区块，区块序号都增加1）
 10. GasLimit:Gas限制
 11. GasUsed:交易消耗的Gas（此区块中交易所用的总gas量）
@@ -79,6 +79,14 @@ Oa是20个字节，Ot是32个字节，Od是很多字节
 
 以太坊中的Events和Logs基本上算是同一个概念。Solidity和web3.js中称为Events，以太坊黄皮书中称为Logs。你可以理解为：以太坊通过Logs实现Events（事件）功能。智能合约代码通过LOG 将日志写入区块链中。 
 
+###### C:topic
+
+![](./picture/ethereum-structure-10.jpg)
+
+从上面的例子中，我们使用`event`关键字定义一个事件，参数列表中为要记录的日志参数的名称及类型。
+
+日志中存储的不同的索引事件就叫不同的主题(topic)。比如，事件定义，event transfer(address indexed _from, address indexed _to, uint value)有三个主题，第一个主题为默认主题，即事件签名transfer(address,address,uint256)，但如果是声明为anonymous的事件，则没有这个主题；另外两个indexed的参数也会分别形成两个主题，可以分别通过_from，_to主题来进行过滤。如果数组，包括字符串，字节数据做为索引参数，实际主题是对应值的Keccak-256哈希值。
+
 ###  1.2 区块体
 
 ![](./picture/ethereum-structure-3.jpg)
@@ -118,13 +126,17 @@ Oa是20个字节，Ot是32个字节，Od是很多字节
 
 #####    区块头的存储格式为：
 
-​    headerPrefix + num (uint64 big endian) + hash -> rlpEncode(header)
+```
+   headerPrefix + num (uint64 big endian) + hash -> rlpEncode(header)
+```
 
    其中key由区块头前缀、区块号（uint64大端格式）、区块hash构成，value是区块头的RLP编码。
 
 #####    区块体的存储格式为：
 
+```
    bodyPrefix + num (uint64 big endian) + hash -> rlpEncode(block body)
+```
 
    其中key由区块体前缀、区块号（uint64大端格式）、区块hash构成，value是区块体的RLP编码。
 
@@ -132,31 +144,29 @@ Oa是20个字节，Ot是32个字节，Od是很多字节
 
    key中的前缀可以用来区分数据的类型，在core/rawdb/scheme.go中定义了各种前缀：
 
+```
+ headerPrefix = []byte("h") // headerPrefix + num (uint64 big endian) + hash -> header
 
+ tdSuffix = []byte("t") // headerPrefix + num (uint64 big endian) + hash + tdSuffix -> td
 
-   headerPrefix = []byte("h") // headerPrefix + num (uint64 big endian) + hash -> header
+ numSuffix = []byte("n") // headerPrefix + num (uint64 big endian) + numSuffix -> hash
 
-   tdSuffix = []byte("t") // headerPrefix + num (uint64 big endian) + hash + tdSuffix -> td
+ blockHashPrefix = []byte("H") // blockHashPrefix + hash -> num (uint64 big endian)
 
-   numSuffix = []byte("n") // headerPrefix + num (uint64 big endian) + numSuffix -> hash
+ bodyPrefix = []byte("b") // bodyPrefix + num (uint64 big endian) + hash -> block body
 
-   blockHashPrefix = []byte("H") // blockHashPrefix + hash -> num (uint64 big endian)
+ blockReceiptsPrefix = []byte("r") // blockReceiptsPrefix + num (uint64 big endian) + hash -> block receipts
 
-   bodyPrefix = []byte("b") // bodyPrefix + num (uint64 big endian) + hash -> block body
+ lookupPrefix = []byte("l") // lookupPrefix + hash -> transaction/receipt lookup metadata
 
-   blockReceiptsPrefix = []byte("r") // blockReceiptsPrefix + num (uint64 big endian) + hash -> block receipts
-
-   lookupPrefix = []byte("l") // lookupPrefix + hash -> transaction/receipt lookup metadata
-
-   bloomBitsPrefix = []byte("B") // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
-
-
+ bloomBitsPrefix = []byte("B") // bloomBitsPrefix + bit (uint16 big endian) + section (uint64 big endian) + hash -> bloom bits
+```
 
    其中headerPrefix定义了区块头key的前缀为h，bodyPrefix定义了区块体key的前缀为b。
 
 
 
-####  区块头存储
+#####  区块头存储
 
 ​      存储区块头的函数:
 
@@ -166,7 +176,7 @@ Oa是20个字节，Ot是32个字节，Od是很多字节
 
 
 
-#### 区块体存储
+#####  区块体存储
 
 ​     将区块中的交易数据和叔块头信息进行 RLP 编码从而生成存储值value；
 
@@ -184,16 +194,79 @@ txHash + txMetaSuffix -> rlpEncode(txMeta)
 
 Meta信息结构体：
 
+```
 type TxLookupEntry struct {
 
-​     BlockHash common.Hash  //块的hash
-
-​     BlockIndex uint64  //块号
-
-​     Index uint64   //块上第几笔交易
+   BlockHash common.Hash  //块的hash
+   BlockIndex uint64  //块号
+   Index uint64   //块上第几笔交易
 
 }
+```
 
 key："l"+交易hash
 
 value：TxLookupEntry {区块hash，区块高度，交易位于区块的索引} ，Meta的RLP编码
+
+```
+// WriteTxLookupEntries stores a positional metadata for every transaction from// a block, enabling hash based transaction and receipt lookups.
+func WriteTxLookupEntries(db ethdb.Putter, block *types.Block) error {
+// Iterate over each transaction and encode its metadata
+for i, tx := range block.Transactions() {
+entry := TxLookupEntry{
+BlockHash: block.Hash(),
+BlockIndex: block.NumberU64(),
+Index: uint64(i),
+}
+data, err := rlp.EncodeToBytes(entry)
+if err != nil {
+return err
+}
+if err := db.Put(append(lookupPrefix, tx.Hash().Bytes()...), data); err != nil {
+return err
+}
+}
+return nil
+}
+```
+
+这里，在将交易meta入库时，会遍历块上的所有交易，并构造交易的meta信息，进行RLP编码。然后以"l"+交易hash为key，meta为value进行存储。
+
+### 2.3 State ROOT
+
+![](./picture/ethereum-structure-11.jpg)
+
+以太坊中有两种不同的数据类型：永久数据和暂时数据。永久数据的例子就是转账。一旦转账确认，就会在区块链中记录；然后就再也不可以更改。暂时数据的例子就是特定以太坊账户地址的余额。账户的余额就会存储在状态树中，并且当有特定账户转账的时候，就会改变。永久数据是有意义的，就好像挖矿转账，暂时数据，就例如账户余额，应该被分开存储。以太坊会使用数据树结构来管理数据。
+
+#### 2.3.1 账户状态
+
+账户状态有四个组成部分，不论账户类型是什么，都存在这四个组成部分：
+
+1. nonce：如果账户是一个外部拥有账户，nonce代表从此账户地址发送的交易序号。如果账户是一个合约账户，nonce代表此账户创建的合约序号
+
+2. balance： 此地址拥有Wei的数量。1Ether=10^18Wei
+
+3. storageRoot： Merkle Patricia树的根节点Hash值。Merkle树会将此账户存储内容的Hash值进行编码，默认是空值
+
+4. codeHash：此账户EVM代码的hash值。对于合约账户，就是被Hash的代码并作为codeHash保存。对于外部拥有账户，codeHash域是一个空字符串的Hash值
+
+#### 2.3.2 世界状态
+
+以太坊的全局状态就是由账户地址和账户状态的一个映射组成。这个映射被保存在一个叫做Merkle Patricia树的数据结构中。
+
+这棵树要求存在里面的值（value）都有一个对应的key。从树的根节点开始，key会告诉你顺着哪个子节点可以获得对应的值，这个值存在叶子节点。在以太坊中，key/value是地址和与2地址相关联的账户之间状态的映射，包括每个账户的balance, nonce, codeHash和storageRoot（storageRoot自己就是一颗树）。
+
+![](./picture/ethereum-structure-13.jpg)
+
+
+![](./picture/ethereum-structure-12.png)
+
+状态树————是唯一和独特的。
+
+在以太坊中，只有唯一的网络状态前缀树。 这个网络状态前缀树会实时更新。 网络状态前缀树包含秘钥和每个账户的价值对，这些是在以太坊网络上。 秘钥是单个160字节的认证器（以太坊账户的地址）。
+
+网络状态前缀树的“数值”是通过对以太坊账户以下账户细节的编译得出的： -nonce -余额 -storageRoot -codeHash。
+
+storageRoot ————智能合约数据的存储。
+
+![](./picture/ethereum-structure-14.jpg)
