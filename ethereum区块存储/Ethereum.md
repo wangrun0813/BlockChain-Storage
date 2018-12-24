@@ -1,3 +1,5 @@
+
+
 # Ethereum
 
 ## 一：区块结构
@@ -124,22 +126,6 @@ Oa是20个字节，Ot是32个字节，Od是很多字节
 
 区块存储时将区块头和区块体分开存储。
 
-#####    区块头的存储格式为：
-
-```
-   headerPrefix + num (uint64 big endian) + hash -> rlpEncode(header)
-```
-
-   其中key由区块头前缀、区块号（uint64大端格式）、区块hash构成，value是区块头的RLP编码。
-
-#####    区块体的存储格式为：
-
-```
-   bodyPrefix + num (uint64 big endian) + hash -> rlpEncode(block body)
-```
-
-   其中key由区块体前缀、区块号（uint64大端格式）、区块hash构成，value是区块体的RLP编码。
-
 #####    key前缀
 
    key中的前缀可以用来区分数据的类型，在core/rawdb/scheme.go中定义了各种前缀：
@@ -164,8 +150,6 @@ Oa是20个字节，Ot是32个字节，Od是很多字节
 
    其中headerPrefix定义了区块头key的前缀为h，bodyPrefix定义了区块体key的前缀为b。
 
-
-
 #####  区块头存储
 
 ​      存储区块头的函数:
@@ -173,6 +157,12 @@ Oa是20个字节，Ot是32个字节，Od是很多字节
 ![](./picture/ethereum-structure-5.jpg)
 
 ​     它是先对区块头进行RLP编码，encodeBlockNumber将区块号转换成大端格式，然后组装key。这里先向数据库中存储一条区块hash->区块号 的记录，最后将区块头的RLP编码写到数据库中。
+
+```
+   headerPrefix + num (uint64 big endian) + hash -> rlpEncode(header)
+```
+
+   其中key由区块头前缀、区块号（uint64大端格式）、区块hash构成，value是区块头的RLP编码。
 
 
 
@@ -184,13 +174,17 @@ Oa是20个字节，Ot是32个字节，Od是很多字节
 
 ​     将存储至db数据库中。
 
+```
+   bodyPrefix + num (uint64 big endian) + hash -> rlpEncode(block body)
+```
+
+   其中key由区块体前缀、区块号（uint64大端格式）、区块hash构成，value是区块体的RLP编码。
+
 
 
 ###  2.2 交易存储
 
 交易主要在数据库中仅存储交易的Meta信息。
-
-txHash + txMetaSuffix -> rlpEncode(txMeta)
 
 Meta信息结构体：
 
@@ -232,15 +226,41 @@ return nil
 
 这里，在将交易meta入库时，会遍历块上的所有交易，并构造交易的meta信息，进行RLP编码。然后以"l"+交易hash为key，meta为value进行存储。
 
-### 2.3 State ROOT
+![](./picture/ethereum-structure-17.jpg)
+
+从图中可以看出，MPT中是以交易在区块中的索引的RLP编码作为key，存储交易数据的RLP编码。
+
+事实上交易在LeveDB中并不是单独存储的，而是存储在区块的Body中。
+
+以b + block index + block hash作为关键字就可以唯一确定某个区块的Body所在的位置。
+
+另外，为了能够快速查询某笔交易的数据，在数据库中还存储了每笔交易的索引信息，称为TxLookupEntry。TxLookupEntry中包含了block index和block hash用于定位区块Body，同时还包含了该笔交易在区块Body中的索引位置。
+
+### 2.3 Receipts的存储
+
+![](./picture/ethereum-structure-18.jpg)
+
+交易回执的存储和交易类似，区别是交易回执是单独存储到LevelDB中的，以r为前缀。
+另外，由于交易回执和交易是一一对应的，因此也可以通过TxLookupEntry快速定位交易回执所在的位置，加速交易回执的查找。
+
+### 2.4 State DB 存储
 
 ![](./picture/ethereum-structure-11.jpg)
 
 以太坊中有两种不同的数据类型：永久数据和暂时数据。永久数据的例子就是转账。一旦转账确认，就会在区块链中记录；然后就再也不可以更改。暂时数据的例子就是特定以太坊账户地址的余额。账户的余额就会存储在状态树中，并且当有特定账户转账的时候，就会改变。永久数据是有意义的，就好像挖矿转账，暂时数据，就例如账户余额，应该被分开存储。以太坊会使用数据树结构来管理数据。
 
-#### 2.3.1 账户状态
+#### 2.4.1 账户状态
 
-账户状态有四个组成部分，不论账户类型是什么，都存在这四个组成部分：
+账户状态（stateObject）有四个组成部分，不论账户类型是什么，都存在这四个组成部分：
+
+```
+type Account struct {
+    Nonce    uint64
+    Balance  *big.Int
+    Root     common.Hash // merkle root of the storage trie
+    CodeHash []byte
+}
+```
 
 1. nonce：如果账户是一个外部拥有账户，nonce代表从此账户地址发送的交易序号。如果账户是一个合约账户，nonce代表此账户创建的合约序号
 
@@ -250,7 +270,21 @@ return nil
 
 4. codeHash：此账户EVM代码的hash值。对于合约账户，就是被Hash的代码并作为codeHash保存。对于外部拥有账户，codeHash域是一个空字符串的Hash值
 
-#### 2.3.2 世界状态
+#### 2.4.2 世界状态
+
+StateDB中存储了很多stateObject，而每一个stateObject则代表了一个以太坊账户，包含了账户的地址、余额、nonce、合约代码hash等状态信息。所有账户的当前状态在以太坊中被称为“世界状态”，在每次挖出或者接收到新区块时需要更新世界状态。
+
+为了能够快速检索和更新账户状态，StateDB采用了两级缓存机制，参见下图：
+
+![](./picture/ethereum-structure-15.jpg)
+
+- 第一级缓存以map的形式存储stateObject
+
+- 第二级缓存以MPT的形式存储
+
+- 第三级就是LevelDB上的持久化存储
+
+当上一级缓存中没有所需的数据时，会从下一级缓存或者数据库中进行加载。
 
 以太坊的全局状态就是由账户地址和账户状态的一个映射组成。这个映射被保存在一个叫做Merkle Patricia树的数据结构中。
 
@@ -263,10 +297,18 @@ return nil
 
 状态树————是唯一和独特的。
 
-在以太坊中，只有唯一的网络状态前缀树。 这个网络状态前缀树会实时更新。 网络状态前缀树包含秘钥和每个账户的价值对，这些是在以太坊网络上。 秘钥是单个160字节的认证器（以太坊账户的地址）。
+在以太坊中，只有唯一的状态树。 这个状态树会实时更新。 状态树包含秘钥和每个账户的价值对，这些是在以太坊网络上。 秘钥是单个160字节的认证器（以太坊账户的地址）。
 
-网络状态前缀树的“数值”是通过对以太坊账户以下账户细节的编译得出的： -nonce -余额 -storageRoot -codeHash。
+状态树的“数值”是通过对以太坊账户以下账户细节的编译得出的： -nonce -余额 -storageRoot -codeHash。
 
-storageRoot ————智能合约数据的存储。
+storageRoot ————智能合约数据的存储（存储的是智能合约执行后修改的变量值）。
 
 ![](./picture/ethereum-structure-14.jpg)
+
+- 对于基本数据类型，key = 合约中的变量声明位置（从0开始）
+
+- 对于map类型，key = SHA3(map中的关键字，变量声明位置)，也就是把map中的关键字和变量声明位置拼在一起成为一个64字节的[]byte，然后计算hash值
+
+- value不管在哪种情况下都存储变量的实际值
+
+  ![](./picture/ethereum-structure-16.jpg)
